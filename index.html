@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Visualizer</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; color: #fff; font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
+    video { display: none; }
+    canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+    canvas.mirror { transform: scaleX(-1); }
+    .glass { background: rgba(10, 10, 12, 0.55); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+    .bar {
+      position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center;
+      padding: 8px 12px; border-radius: 16px; max-width: calc(100% - 32px); box-sizing: border-box;
+    }
+    select, button {
+      font: inherit; color: #fff; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 999px; padding: 6px 12px; cursor: pointer;
+    }
+    button:hover, select:hover { background: rgba(255, 255, 255, 0.16); }
+    button[aria-pressed="true"] { background: #fff; color: #000; }
+    .sep { width: 1px; height: 22px; background: rgba(255, 255, 255, 0.2); }
+    #presets { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+    .meter { width: 34px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+    .meter i { display: block; height: 100%; width: 0; background: #7dffb2; }
+
+    .panel {
+      position: fixed; top: 12px; right: 12px; bottom: 76px; width: 300px; max-width: calc(100% - 24px);
+      border-radius: 16px; overflow-y: auto; padding: 12px 14px; box-sizing: border-box; font-size: 13px;
+    }
+    .panel[hidden] { display: none; }
+    .panel, .bar { user-select: none; -webkit-user-select: none; }
+    @media (max-width: 700px) { .panel { bottom: 190px; } }
+    .panel h3 { margin: 14px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6; }
+    .panel h3:first-child { margin-top: 0; }
+    .ctl { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; margin: 5px 0; }
+    .ctl input[type=range] { width: 100%; accent-color: #fff; }
+    .ctl input[type=color] { width: 100%; height: 26px; border: 0; padding: 0; background: none; cursor: pointer; }
+    .ctl select { border-radius: 8px; padding: 3px 8px; }
+    .swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .swatches.three { grid-template-columns: repeat(3, 1fr); }
+    .swatches input { width: 100%; height: 26px; border: 0; padding: 0; background: none; cursor: pointer; }
+    .panel .row { display: flex; gap: 8px; margin-top: 14px; }
+    .panel .row button { flex: 1; border-radius: 10px; }
+
+    .msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px; pointer-events: none; }
+    .msg[hidden] { display: none; }
+    .status { position: fixed; top: 12px; left: 12px; font-size: 12px; opacity: 0.7; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="out" class="mirror"></canvas>
+  <div id="msg" class="msg">Starting camera…</div>
+  <div id="status" class="status"></div>
+
+  <div id="panel" class="panel glass" hidden></div>
+
+  <div class="bar glass">
+    <div id="presets" role="group" aria-label="Look"></div>
+    <span class="sep"></span>
+    <button id="customize" type="button" aria-pressed="false">Customize</button>
+    <button id="mic" type="button" aria-pressed="false">Mic <span class="meter"><i id="meter"></i></span></button>
+    <select id="cameras" aria-label="Camera" hidden></select>
+    <button id="mirror" type="button">Mirror</button>
+    <button id="snap" type="button">Snapshot</button>
+  </div>
+
+  <script type="module">
+    import { ImageSegmenter, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+
+    // ---------- looks ----------
+    // Every look is a set of the same parameters, so any preset can be customised and new
+    // looks are just new numbers. Reactivity (vibration, mic, motion) is kept across presets.
+    const PRESETS = {
+      Afterglow: { bg0: '#04080f', bg1: '#0d3845', bg2: '#6ba39e', bg3: '#eef5d6', lo: 0.08, hi: 0.82, smoke: 0.7, bloom: 0.55, poster: 0, wave: 0, split: 0, splitL: '#e0715a', splitR: '#16212b',
+                   figMix: 0, fig0: '#b8381a', fig1: '#ef7a4d', fig2: '#ffb890', flat: 0.75, vertical: 0, edge: 0.45, haloCol: '#f23861', halo: 0.6,
+                   smear: 0, smearSide: 'both', grain: 0.2, vignette: 0.3, specks: 0, fringe: 0.2 },
+      Thermal:   { bg0: '#3a0a14', bg1: '#6e1a26', bg2: '#1b8a74', bg3: '#f4fbf6', lo: 0.1, hi: 0.9, smoke: 0.85, bloom: 0.7, poster: 5, wave: 0, split: 0, splitL: '#e0715a', splitR: '#16212b',
+                   figMix: 0, fig0: '#b3202a', fig1: '#1a3d9e', fig2: '#2cc7a0', flat: 0.5, vertical: 0, edge: 0.35, haloCol: '#ff4a1a', halo: 0.5,
+                   smear: 0.35, smearSide: 'both', grain: 0.15, vignette: 0.15, specks: 0.3, fringe: 0.5 },
+      Tide:      { bg0: '#03060a', bg1: '#081418', bg2: '#2f7d72', bg3: '#8fd1c0', lo: 0.15, hi: 0.9, smoke: 0.2, bloom: 0.1, poster: 0, wave: 0, split: 0, splitL: '#e0715a', splitR: '#16212b',
+                   figMix: 0, fig0: '#1b2320', fig1: '#f0621c', fig2: '#b6d38f', flat: 0.6, vertical: 0, edge: 0.7, haloCol: '#78c9a6', halo: 0.25,
+                   smear: 0, smearSide: 'both', grain: 0.22, vignette: 0.35, specks: 0.5, fringe: 0 },
+      Deep:      { bg0: '#0a1f0c', bg1: '#2d6b1e', bg2: '#1f7fc4', bg3: '#d9dde0', lo: 0.05, hi: 0.85, smoke: 0.6, bloom: 0.35, poster: 0, wave: 1, split: 0, splitL: '#e0715a', splitR: '#16212b',
+                   figMix: 0.85, fig0: '#0b0b0e', fig1: '#3a2a2a', fig2: '#f0c8b8', flat: 0.2, vertical: 0, edge: 0.5, haloCol: '#3aa0ff', halo: 0.3,
+                   smear: 0, smearSide: 'both', grain: 0.18, vignette: 0.2, specks: 0, fringe: 0 },
+      Split:     { bg0: '#0a0d10', bg1: '#2a2f36', bg2: '#8a6a60', bg3: '#e8d6c8', lo: 0.1, hi: 0.9, smoke: 0.5, bloom: 0, poster: 0, wave: 0, split: 1, splitL: '#e0715a', splitR: '#16212b',
+                   figMix: 0.9, fig0: '#050506', fig1: '#3a2a24', fig2: '#e8d6b0', flat: 0.1, vertical: 0, edge: 0.3, haloCol: '#ff6040', halo: 0.2,
+                   smear: 0.6, smearSide: 'left', grain: 0.25, vignette: 0.25, specks: 0.4, fringe: 0.1 },
+      Dusk:      { bg0: '#5a1a10', bg1: '#b0462a', bg2: '#5a5fb8', bg3: '#8a8ee0', lo: 0.1, hi: 0.7, smoke: 0.4, bloom: 0, poster: 0, wave: 0, split: 0, splitL: '#e0715a', splitR: '#16212b',
+                   figMix: 0, fig0: '#ff9aa8', fig1: '#ffc3b0', fig2: '#d9f5c8', flat: 0.9, vertical: 0.85, edge: 0.8, haloCol: '#ffb0c0', halo: 0.5,
+                   smear: 0, smearSide: 'both', grain: 0.3, vignette: 0.2, specks: 0.2, fringe: 0.1 },
+    };
+    const REACT = { vibe: 0.6, micSens: 1, motionSens: 1 };
+
+    // Controls, grouped as they appear in the Customize panel.
+    const CONTROLS = [
+      { group: 'Background', keys: ['bg0', 'bg1', 'bg2', 'bg3'], type: 'palette', label: 'Colours (dark → light)' },
+      { group: 'Background', key: 'lo', label: 'Shadows', min: 0, max: 0.6, step: 0.01 },
+      { group: 'Background', key: 'hi', label: 'Highlights', min: 0.4, max: 1, step: 0.01 },
+      { group: 'Background', key: 'smoke', label: 'Smoke', min: 0, max: 1, step: 0.01 },
+      { group: 'Background', key: 'bloom', label: 'Bloom', min: 0, max: 1, step: 0.01 },
+      { group: 'Background', key: 'poster', label: 'Posterize', min: 0, max: 8, step: 1 },
+      { group: 'Background', key: 'wave', label: 'Waves', min: 0, max: 1.5, step: 0.01 },
+      { group: 'Background', key: 'split', label: 'Split halves', type: 'toggle' },
+      { group: 'Background', keys: ['splitL', 'splitR'], type: 'palette', label: 'Split colours' },
+      { group: 'Figure', keys: ['fig0', 'fig1', 'fig2'], type: 'palette', label: 'Colours (dark → light)' },
+      { group: 'Figure', key: 'figMix', label: 'Real image', min: 0, max: 1, step: 0.01 },
+      { group: 'Figure', key: 'flat', label: 'Flatness', min: 0, max: 1, step: 0.01 },
+      { group: 'Figure', key: 'vertical', label: 'Top-to-bottom', min: 0, max: 1, step: 0.01 },
+      { group: 'Figure', key: 'edge', label: 'Edge softness', min: 0, max: 1, step: 0.01 },
+      { group: 'Figure', key: 'haloCol', label: 'Halo colour', type: 'color' },
+      { group: 'Figure', key: 'halo', label: 'Halo', min: 0, max: 1, step: 0.01 },
+      { group: 'Motion', key: 'smear', label: 'Smear', min: 0, max: 1, step: 0.01 },
+      { group: 'Motion', key: 'smearSide', label: 'Smear side', type: 'select', options: ['both', 'left', 'right'] },
+      { group: 'Film', key: 'grain', label: 'Grain', min: 0, max: 0.5, step: 0.01 },
+      { group: 'Film', key: 'vignette', label: 'Vignette', min: 0, max: 0.8, step: 0.01 },
+      { group: 'Film', key: 'specks', label: 'Dust', min: 0, max: 1, step: 0.01 },
+      { group: 'Film', key: 'fringe', label: 'Colour fringe', min: 0, max: 1, step: 0.01 },
+      { group: 'Reactivity', key: 'vibe', label: 'Vibration', min: 0, max: 1.5, step: 0.01 },
+      { group: 'Reactivity', key: 'micSens', label: 'Mic sensitivity', min: 0, max: 3, step: 0.05 },
+      { group: 'Reactivity', key: 'motionSens', label: 'Motion sensitivity', min: 0, max: 3, step: 0.05 },
+    ];
+    let preset = 'Afterglow';
+    let params = { ...PRESETS[preset], ...REACT };
+
+    const video = document.getElementById('video');
+    const out = document.getElementById('out');
+    const msg = document.getElementById('msg');
+    const status = document.getElementById('status');
+    const picker = document.getElementById('cameras');
+    let stream = null, segmenter = null, lastTs = 0;
+    function show(text) { msg.textContent = text; msg.hidden = !text; }
+
+    // ---------- camera ----------
+    async function start(deviceId) {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: deviceId ? { deviceId: { exact: deviceId } } : { width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        video.srcObject = stream;
+        await video.play();
+        show('');
+        await listCameras(stream.getVideoTracks()[0].getSettings().deviceId);
+      } catch (err) {
+        show(err.name === 'NotAllowedError'
+          ? 'Camera access was blocked. Allow it in your browser’s site settings and reload.'
+          : `Couldn’t start the camera: ${err.message}`);
+      }
+    }
+    async function listCameras(currentId) {
+      const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+      picker.innerHTML = '';
+      devices.forEach((d, i) => picker.add(new Option(d.label || `Camera ${i + 1}`, d.deviceId, false, d.deviceId === currentId)));
+      picker.hidden = devices.length < 2;
+    }
+
+    // ---------- person outline ----------
+    async function loadSegmenter() {
+      status.textContent = 'Loading…';
+      try {
+        const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+        segmenter = await ImageSegmenter.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite',
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO', outputConfidenceMasks: true, outputCategoryMask: false,
+        });
+        status.textContent = '';
+      } catch (err) {
+        status.textContent = 'Body tracking unavailable — check your connection and reload';
+      }
+    }
+    const small = document.createElement('canvas');
+    const sg = small.getContext('2d', { willReadFrequently: true });
+    let maskBytes = null, maskW = 0, maskH = 0;
+    function trackPerson(ts) {
+      if (!segmenter) return false;
+      const w = 256, h = Math.round(256 * video.videoHeight / video.videoWidth);
+      if (small.width !== w || small.height !== h) { small.width = w; small.height = h; }
+      sg.drawImage(video, 0, 0, w, h);
+      const res = segmenter.segmentForVideo(small, ts);
+      const m = res.confidenceMasks && res.confidenceMasks[0];
+      if (m) {
+        const f = m.getAsFloat32Array();
+        if (!maskBytes || maskBytes.length !== f.length) maskBytes = new Uint8Array(f.length);
+        for (let i = 0; i < f.length; i++) maskBytes[i] = f[i] * 255;
+        maskW = m.width; maskH = m.height;
+      }
+      res.close();
+      return !!m;
+    }
+
+    // ---------- reactivity: overall camera motion + microphone ----------
+    const tiny = document.createElement('canvas'); tiny.width = 64; tiny.height = 36;
+    const tg = tiny.getContext('2d', { willReadFrequently: true });
+    let prevTiny = null, motion = 0;
+    function trackMotion() {
+      tg.drawImage(video, 0, 0, 64, 36);
+      const d = tg.getImageData(0, 0, 64, 36).data;
+      const cur = new Uint8Array(64 * 36);
+      let diff = 0;
+      for (let i = 0; i < cur.length; i++) {
+        cur[i] = (d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11) | 0;
+        if (prevTiny) diff += Math.abs(cur[i] - prevTiny[i]);
+      }
+      prevTiny = cur;
+      const target = Math.min(1, diff / cur.length / 255 * 10 * params.motionSens);
+      motion += (target - motion) * (target > motion ? 0.5 : 0.08);
+    }
+    let audio = null, analyser = null, micStream = null, level = 0, bass = 0, timeData, freqData;
+    async function toggleMic(btn) {
+      if (micStream) {
+        micStream.getTracks().forEach(t => t.stop()); micStream = null; analyser = null; level = bass = 0;
+        btn.setAttribute('aria-pressed', 'false'); return;
+      }
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false } });
+        audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+        await audio.resume();
+        analyser = audio.createAnalyser(); analyser.fftSize = 1024;
+        audio.createMediaStreamSource(micStream).connect(analyser);
+        timeData = new Float32Array(analyser.fftSize); freqData = new Uint8Array(analyser.frequencyBinCount);
+        btn.setAttribute('aria-pressed', 'true');
+      } catch (err) {
+        status.textContent = err.name === 'NotAllowedError' ? 'Microphone access was blocked' : `Microphone unavailable: ${err.message}`;
+      }
+    }
+    function trackAudio() {
+      if (!analyser) { level *= 0.9; bass *= 0.9; return; }
+      analyser.getFloatTimeDomainData(timeData);
+      let sum = 0; for (let i = 0; i < timeData.length; i++) sum += timeData[i] * timeData[i];
+      const rms = Math.sqrt(sum / timeData.length);
+      const l = Math.min(1, rms * 8 * params.micSens);
+      level += (l - level) * (l > level ? 0.6 : 0.12);                 // fast attack, slow release
+      analyser.getByteFrequencyData(freqData);
+      let b = 0; for (let i = 1; i < 10; i++) b += freqData[i];
+      const bt = Math.min(1, b / 9 / 255 * 1.4 * params.micSens);
+      bass += (bt - bass) * (bt > bass ? 0.6 : 0.1);
+    }
+
+    // ---------- GPU ----------
+    // vUv runs top-down (video, mask, screen); vGl is GL's bottom-up space, used for the
+    // offscreen targets so they never need flipping.
+    const gl = out.getContext('webgl', { preserveDrawingBuffer: true });
+    const VERT = `
+      attribute vec2 aPos; varying vec2 vUv, vGl;
+      void main() { vGl = aPos * 0.5 + 0.5; vUv = vec2(vGl.x, 1.0 - vGl.y); gl_Position = vec4(aPos, 0.0, 1.0); }`;
+    const HEAD = `precision highp float; varying vec2 vUv, vGl;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+      }
+      const vec3 LUM = vec3(0.299, 0.587, 0.114);`;
+    // quarter-size copy of the frame with the person mask in alpha
+    const DOWN = HEAD + `uniform sampler2D uVideo, uMask;
+      void main() { vec2 uv = vec2(vGl.x, 1.0 - vGl.y); gl_FragColor = vec4(texture2D(uVideo, uv).rgb, texture2D(uMask, uv).r); }`;
+    const COPY = HEAD + `uniform sampler2D uTex; void main() { gl_FragColor = texture2D(uTex, vGl); }`;
+    // where things moved since the last frame
+    const MOTION = HEAD + `uniform sampler2D uCur, uPrev;
+      void main() { float d = abs(dot(texture2D(uCur, vGl).rgb - texture2D(uPrev, vGl).rgb, LUM)); gl_FragColor = vec4(vec3(clamp(d * 5.0, 0.0, 1.0)), 1.0); }`;
+    const BLUR = HEAD + `uniform sampler2D uTex; uniform vec2 uDir;
+      void main() {
+        vec4 s = texture2D(uTex, vGl) * 0.227;
+        s += (texture2D(uTex, vGl + uDir * 1.385) + texture2D(uTex, vGl - uDir * 1.385)) * 0.316;
+        s += (texture2D(uTex, vGl + uDir * 3.23) + texture2D(uTex, vGl - uDir * 3.23)) * 0.07;
+        gl_FragColor = s;
+      }`;
+
+    // The look: figure vs. environment, each gradient-mapped; the environment smokes, waves,
+    // splits and vibrates with motion and sound; the figure can smear, glow and fringe.
+    const FINAL = HEAD + `
+      uniform sampler2D uVideo, uMask, uBlur, uMotionMap;
+      uniform vec2 uRes;
+      uniform float uTime, uHasMask, uMirror, uAudio, uBass, uMotion;
+      uniform vec3 uBg0, uBg1, uBg2, uBg3, uFig0, uFig1, uFig2, uHaloCol, uSplitL, uSplitR;
+      uniform float uLo, uHi, uSmoke, uBloom, uPoster, uWave, uSplit, uFigMix, uFlat, uVertical, uEdge, uHalo;
+      uniform float uSmear, uSmearSide, uGrain, uVignette, uSpecks, uFringe, uVibe;
+
+      vec3 ramp4(float t) {
+        t = clamp(t, 0.0, 1.0);
+        if (t < 1.0 / 3.0) return mix(uBg0, uBg1, t * 3.0);
+        if (t < 2.0 / 3.0) return mix(uBg1, uBg2, t * 3.0 - 1.0);
+        return mix(uBg2, uBg3, t * 3.0 - 2.0);
+      }
+      vec3 ramp3(float t) { t = clamp(t, 0.0, 1.0); return t < 0.5 ? mix(uFig0, uFig1, t * 2.0) : mix(uFig1, uFig2, t * 2.0 - 1.0); }
+      vec4 blurAt(vec2 uv) { return texture2D(uBlur, vec2(uv.x, 1.0 - uv.y)); }
+
+      void main() {
+        vec2 uv = vUv;
+        float t = uTime;
+        float screenX = uMirror > 0.5 ? 1.0 - uv.x : uv.x;
+        float energy = uVibe * (uAudio + uMotion * 0.8 + texture2D(uMotionMap, vGl).r * 1.5);
+
+        // horizontal smear: each row reaches sideways a flickering distance
+        float side = uSmearSide < -0.5 ? 1.0 - smoothstep(0.42, 0.58, screenX) : (uSmearSide > 0.5 ? smoothstep(0.42, 0.58, screenX) : 1.0);
+        float n = noise(vec2(uv.y * 38.0, t * 0.7)) * 0.7 + noise(vec2(uv.y * 110.0, -t * 1.9)) * 0.3;
+        float len = (uSmear + uAudio * uVibe * 0.25) * side * 0.22 * n * n;
+        vec3 V = vec3(0.0); float M = 0.0;
+        for (int k = 0; k < 8; k++) {
+          vec2 o = uv + vec2((float(k) / 7.0 - 0.5) * len, 0.0);
+          V += texture2D(uVideo, o).rgb; M += texture2D(uMask, o).r;
+        }
+        V /= 8.0; M /= 8.0;
+
+        // the environment vibrates around motion and sound
+        vec2 jit = (vec2(noise(uv * vec2(38.0, 28.0) + t * 17.0), noise(uv * vec2(31.0, 43.0) - t * 15.0)) - 0.5) * energy * 0.035;
+        jit.x += (hash(vec2(floor(uv.y * 90.0), floor(t * 24.0))) - 0.5) * energy * uAudio * 0.03;
+        vec2 bgUv = uv + jit;
+        bgUv += vec2(sin(uv.y * 18.0 + t * 0.8) + 0.6 * sin(uv.y * 7.0 - t * 0.5), sin(uv.x * 12.0 + t * 0.6)) * uWave * (0.02 + 0.02 * uAudio * uVibe);
+        bgUv = 0.5 + (bgUv - 0.5) * (1.0 - 0.035 * uBass * uVibe);    // bass pulse
+
+        float Ls = mix(dot(texture2D(uVideo, bgUv).rgb, LUM), dot(V, LUM), clamp(len * 20.0, 0.0, 1.0));
+        float Lb = dot(blurAt(bgUv).rgb, LUM);
+        float tb = smoothstep(uLo, uHi, mix(Ls, Lb, uSmoke));
+        if (uPoster > 1.5) tb = clamp(floor(tb * uPoster) / (uPoster - 1.0), 0.0, 1.0);
+        vec3 bg = ramp4(tb) + uBg3 * pow(Lb, 3.0) * uBloom;
+        if (uSplit > 0.5) bg = mix(uSplitL, uSplitR, smoothstep(0.47, 0.53, screenX)) * (0.6 + 0.8 * tb);
+
+        // the figure
+        vec4 bl = blurAt(uv);
+        float pl = mix(dot(V, LUM), dot(bl.rgb, LUM), uFlat);
+        pl = mix(pl, 1.0 - uv.y, uVertical);
+        vec3 fig = mix(ramp3(pl), V, uFigMix);
+        float hard = smoothstep(0.35, 0.7, M), soft = bl.a;
+        float m = uHasMask * smoothstep(0.2, 0.8, mix(hard, soft, uEdge));
+        vec3 col = mix(bg, fig, m);
+        col += uHaloCol * clamp(soft - hard * 0.85, 0.0, 1.0) * uHalo * uHasMask * (1.0 + uAudio * uVibe * 1.5);
+        float fo = 0.004 * uFringe;                                      // colour fringe at the edge
+        float mR = smoothstep(0.35, 0.7, texture2D(uMask, uv + vec2(fo, 0.0)).r);
+        float mB = smoothstep(0.35, 0.7, texture2D(uMask, uv - vec2(fo, 0.0)).r);
+        col.r += (mR - hard) * uFringe * 0.5 * uHasMask;
+        col.b += (mB - hard) * uFringe * 0.5 * uHasMask;
+
+        // film
+        col += (hash(uv * uRes + fract(t * 7.1) * 311.0) - 0.5) * uGrain * (1.0 - 0.5 * dot(col, LUM));
+        float speck = step(1.0 - 0.0012 * uSpecks, hash(floor(uv * uRes / 2.0) + floor(t * 10.0)));
+        col = mix(col, vec3(0.95), speck * 0.8);
+        col *= 1.0 - uVignette * smoothstep(0.45, 1.0, length((uv - 0.5) * vec2(1.0, 1.2)));
+        gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+      }`;
+
+    function compile(type, src) {
+      const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    }
+    function program(frag, names) {
+      const prog = gl.createProgram();
+      gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+      gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, frag));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      const p = { prog, aPos: gl.getAttribLocation(prog, 'aPos') };
+      for (const n of names) p[n] = gl.getUniformLocation(prog, n);
+      return p;
+    }
+    function texture() {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+                            [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+        gl.texParameteri(gl.TEXTURE_2D, k, v);
+      return t;
+    }
+    function target(w, h) {
+      const tex = texture();
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return { tex, fb, w, h };
+    }
+    function use(p, t, textures) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, t ? t.fb : null);
+      gl.viewport(0, 0, t ? t.w : out.width, t ? t.h : out.height);
+      gl.useProgram(p.prog);
+      gl.enableVertexAttribArray(p.aPos);
+      gl.vertexAttribPointer(p.aPos, 2, gl.FLOAT, false, 0, 0);
+      textures.forEach(([name, tex], i) => {
+        gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(p[name], i);
+      });
+    }
+    const draw = () => gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    const PARAM_UNIFORMS = ['bg0', 'bg1', 'bg2', 'bg3', 'fig0', 'fig1', 'fig2', 'haloCol', 'splitL', 'splitR',
+      'lo', 'hi', 'smoke', 'bloom', 'poster', 'wave', 'split', 'figMix', 'flat', 'vertical', 'edge', 'halo',
+      'smear', 'smearSide', 'grain', 'vignette', 'specks', 'fringe', 'vibe'];
+    const uname = k => 'u' + k[0].toUpperCase() + k.slice(1);
+    let P, texVideo, texMask, A, B, C, D, Prev;
+    function setupGL() {
+      P = {
+        down: program(DOWN, ['uVideo', 'uMask']),
+        copy: program(COPY, ['uTex']),
+        motion: program(MOTION, ['uCur', 'uPrev']),
+        blur: program(BLUR, ['uTex', 'uDir']),
+        final: program(FINAL, ['uVideo', 'uMask', 'uBlur', 'uMotionMap', 'uRes', 'uTime', 'uHasMask', 'uMirror',
+          'uAudio', 'uBass', 'uMotion', ...PARAM_UNIFORMS.map(uname)]),
+      };
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+      texVideo = texture(); texMask = texture();
+      gl.bindTexture(gl.TEXTURE_2D, texMask);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, 1, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, new Uint8Array(1));
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    }
+    const hex = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
+    function setParams(p) {
+      for (const k of PARAM_UNIFORMS) {
+        const v = params[k], loc = p[uname(k)];
+        if (typeof v === 'string' && v[0] === '#') gl.uniform3fv(loc, hex(v));
+        else if (k === 'smearSide') gl.uniform1f(loc, v === 'left' ? -1 : v === 'right' ? 1 : 0);
+        else gl.uniform1f(loc, +v);
+      }
+    }
+
+    function frame(now) {
+      requestAnimationFrame(frame);
+      if (!(video.readyState >= 2 && video.videoWidth)) return;
+      const W = video.videoWidth, H = video.videoHeight;
+      if (out.width !== W || out.height !== H) {
+        out.width = W; out.height = H;
+        const w = Math.round(W / 4), h = Math.round(H / 4);
+        A = target(w, h); B = target(w, h); C = target(w, h); D = target(w, h); Prev = target(w, h);
+      }
+      lastTs = Math.max(now, lastTs + 1);
+      let hasMask = false;
+      try { hasMask = trackPerson(lastTs); } catch (err) { console.warn('body tracking failed', err); }
+      trackMotion(); trackAudio();
+      document.getElementById('meter').style.width = `${Math.round(level * 100)}%`;
+
+      gl.bindTexture(gl.TEXTURE_2D, texVideo);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+      if (hasMask) {
+        gl.bindTexture(gl.TEXTURE_2D, texMask);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, maskW, maskH, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, maskBytes);
+      }
+      // quarter-size frame -> motion map (vs last frame) -> keep a copy for next time
+      use(P.down, A, [['uVideo', texVideo], ['uMask', texMask]]); draw();
+      use(P.motion, C, [['uCur', A.tex], ['uPrev', Prev.tex]]); draw();
+      use(P.copy, Prev, [['uTex', A.tex]]); draw();
+      // soften the motion map, and blur the frame twice for the smoke
+      use(P.blur, D, [['uTex', C.tex]]); gl.uniform2f(P.blur.uDir, 2 / C.w, 0); draw();
+      use(P.blur, C, [['uTex', D.tex]]); gl.uniform2f(P.blur.uDir, 0, 2 / C.h); draw();
+      for (const step of [1.5, 3.5]) {
+        use(P.blur, B, [['uTex', A.tex]]); gl.uniform2f(P.blur.uDir, step / A.w, 0); draw();
+        use(P.blur, A, [['uTex', B.tex]]); gl.uniform2f(P.blur.uDir, 0, step / A.h); draw();
+      }
+
+      const f = P.final;
+      use(f, null, [['uVideo', texVideo], ['uMask', texMask], ['uBlur', A.tex], ['uMotionMap', C.tex]]);
+      gl.uniform2f(f.uRes, W, H);
+      gl.uniform1f(f.uTime, now / 1000);
+      gl.uniform1f(f.uHasMask, maskBytes ? 1 : 0);
+      gl.uniform1f(f.uMirror, out.classList.contains('mirror') ? 1 : 0);
+      gl.uniform1f(f.uAudio, level); gl.uniform1f(f.uBass, bass); gl.uniform1f(f.uMotion, motion);
+      setParams(f);
+      draw();
+    }
+
+    // ---------- UI ----------
+    const presetsEl = document.getElementById('presets');
+    const panel = document.getElementById('panel');
+    function renderPresets() {
+      presetsEl.innerHTML = '';
+      for (const name of [...Object.keys(PRESETS), ...(preset === 'Custom' ? ['Custom'] : [])]) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = name; b.setAttribute('aria-pressed', name === preset);
+        if (name !== 'Custom') b.addEventListener('click', () => choose(name));
+        presetsEl.appendChild(b);
+      }
+    }
+    function choose(name) {
+      const react = { vibe: params.vibe, micSens: params.micSens, motionSens: params.motionSens };
+      preset = name; params = { ...PRESETS[name], ...react };
+      renderPresets(); renderPanel();
+    }
+    function edited() { if (preset !== 'Custom') { preset = 'Custom'; renderPresets(); } }
+
+    function renderPanel() {
+      panel.innerHTML = '';
+      let group = '';
+      for (const c of CONTROLS) {
+        if (c.group !== group) {
+          group = c.group;
+          const h = document.createElement('h3'); h.textContent = group; panel.appendChild(h);
+        }
+        const row = document.createElement('div'); row.className = 'ctl';
+        const label = document.createElement('label'); label.textContent = c.label; row.appendChild(label);
+        let input;
+        if (c.type === 'palette') {
+          input = document.createElement('div'); input.className = 'swatches' + (c.keys.length === 3 ? ' three' : '');
+          for (const k of c.keys) {
+            const s = document.createElement('input'); s.type = 'color'; s.value = params[k]; s.setAttribute('aria-label', `${c.label} ${k}`);
+            s.addEventListener('input', () => { params[k] = s.value; edited(); });
+            input.appendChild(s);
+          }
+          if (c.keys.length === 2) input.style.gridTemplateColumns = '1fr 1fr';
+        } else if (c.type === 'color') {
+          input = document.createElement('input'); input.type = 'color'; input.value = params[c.key];
+          input.addEventListener('input', () => { params[c.key] = input.value; edited(); });
+        } else if (c.type === 'toggle') {
+          input = document.createElement('input'); input.type = 'checkbox'; input.checked = !!params[c.key];
+          input.addEventListener('change', () => { params[c.key] = input.checked ? 1 : 0; edited(); });
+        } else if (c.type === 'select') {
+          input = document.createElement('select');
+          for (const o of c.options) input.add(new Option(o, o, false, o === params[c.key]));
+          input.addEventListener('change', () => { params[c.key] = input.value; edited(); });
+        } else {
+          input = document.createElement('input'); input.type = 'range';
+          Object.assign(input, { min: c.min, max: c.max, step: c.step, value: params[c.key] });
+          input.addEventListener('input', () => { params[c.key] = +input.value; if (c.group !== 'Reactivity') edited(); });
+        }
+        label.htmlFor = input.id = `ctl-${c.key || c.keys[0]}`;
+        row.appendChild(input); panel.appendChild(row);
+      }
+      const actions = document.createElement('div'); actions.className = 'row';
+      const rnd = document.createElement('button'); rnd.type = 'button'; rnd.textContent = 'Randomize';
+      rnd.addEventListener('click', randomize);
+      const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset';
+      reset.addEventListener('click', () => choose(preset === 'Custom' ? 'Afterglow' : preset));
+      actions.append(rnd, reset); panel.appendChild(actions);
+    }
+    // A random but coherent look: a dark-to-light background palette around one hue,
+    // a contrasting figure palette, and random amounts for the rest.
+    function randomize() {
+      const hsl = (h, s, l) => {
+        const a = s * Math.min(l, 1 - l), f = n => { const k = (n + h / 30) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+        return '#' + [f(0), f(8), f(4)].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+      };
+      const h = Math.random() * 360, fh = (h + 150 + Math.random() * 60) % 360, r = (a, b) => a + Math.random() * (b - a);
+      Object.assign(params, {
+        bg0: hsl(h, r(0.3, 0.8), r(0.03, 0.1)), bg1: hsl(h + r(-30, 30), r(0.4, 0.8), r(0.2, 0.35)),
+        bg2: hsl(h + r(-60, 60), r(0.4, 0.8), r(0.45, 0.6)), bg3: hsl(h + r(-40, 40), r(0.2, 0.6), r(0.8, 0.95)),
+        fig0: hsl(fh, r(0.6, 1), r(0.25, 0.4)), fig1: hsl(fh + r(-20, 20), r(0.6, 1), r(0.5, 0.6)), fig2: hsl(fh + r(-40, 40), r(0.5, 1), r(0.75, 0.88)),
+        haloCol: hsl(fh + r(-30, 30), 0.9, 0.6),
+        smoke: r(0.2, 0.9), bloom: r(0, 0.7), poster: Math.random() < 0.3 ? Math.round(r(3, 6)) : 0, wave: Math.random() < 0.3 ? r(0.3, 1.2) : 0,
+        split: 0, figMix: Math.random() < 0.25 ? r(0.6, 0.9) : 0, flat: r(0.3, 0.9), vertical: Math.random() < 0.3 ? r(0.4, 0.9) : 0,
+        edge: r(0.3, 0.8), halo: r(0.1, 0.7), smear: Math.random() < 0.3 ? r(0.2, 0.6) : 0, smearSide: 'both',
+        grain: r(0.1, 0.3), vignette: r(0.1, 0.4), specks: r(0, 0.5), fringe: r(0, 0.4),
+      });
+      edited(); renderPanel();
+    }
+
+    document.getElementById('customize').addEventListener('click', e => {
+      panel.hidden = !panel.hidden;
+      e.currentTarget.setAttribute('aria-pressed', !panel.hidden);
+    });
+    document.getElementById('mic').addEventListener('click', e => toggleMic(e.currentTarget));
+    picker.addEventListener('change', () => start(picker.value));
+    document.getElementById('mirror').addEventListener('click', e => {
+      e.currentTarget.setAttribute('aria-pressed', out.classList.toggle('mirror'));
+    });
+    document.getElementById('mirror').setAttribute('aria-pressed', 'true');
+    document.getElementById('snap').addEventListener('click', () => {
+      if (!out.width) return;
+      const shot = document.createElement('canvas');
+      shot.width = out.width; shot.height = out.height;
+      const s = shot.getContext('2d');
+      if (out.classList.contains('mirror')) { s.translate(shot.width, 0); s.scale(-1, 1); }
+      s.drawImage(out, 0, 0);
+      const a = document.createElement('a');
+      a.href = shot.toDataURL('image/png');
+      a.download = `${preset.toLowerCase()}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+      a.click();
+    });
+
+    renderPresets(); renderPanel();
+    if (!navigator.mediaDevices?.getUserMedia) {
+      show('This browser can’t access the camera here. Open the page from http://localhost.');
+    } else if (!gl) {
+      show('This browser doesn’t support WebGL, which the visualizer needs.');
+    } else {
+      setupGL();
+      loadSegmenter();
+      start();
+      requestAnimationFrame(frame);
+    }
+  </script>
+</body>
+</html>
