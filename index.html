@@ -31,7 +31,33 @@
     }
     .panel[hidden] { display: none; }
     .panel, .bar { user-select: none; -webkit-user-select: none; }
-    @media (max-width: 700px) { .panel { bottom: 190px; } }
+    .tabs { display: none; }
+    .tabs button.on { background: #fff; color: #000; }
+    /* Phones: a short strip above the bar showing one group at a time, so the image stays visible */
+    @media (max-width: 700px) {
+      .panel {
+        top: auto; left: 8px; right: 8px; bottom: 64px; width: auto; max-width: none; max-height: 26vh;
+        padding: 0 10px 8px; font-size: 12px; border-radius: 14px; background: rgba(10, 10, 12, 0.42);
+      }
+      .panel h3 { display: none; }
+      .panel .ctl:not(.on) { display: none; }
+      .ctl { grid-template-columns: 92px 1fr; gap: 6px; margin: 2px 0; }
+      .ctl input[type=color], .swatches input { height: 22px; }
+      .panel .row { margin-top: 6px; }
+      .panel .row button { padding: 4px 10px; }
+      .tabs {
+        display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; position: sticky; top: 0; z-index: 1;
+        padding: 8px 0 6px; margin-bottom: 2px; background: linear-gradient(rgba(10, 10, 12, 0.9), rgba(10, 10, 12, 0.6));
+      }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tabs button { flex: none; padding: 3px 10px; font-size: 12px; }
+      .bar { bottom: 8px; gap: 6px; padding: 6px 8px; border-radius: 14px; flex-wrap: nowrap; overflow-x: auto; max-width: calc(100% - 16px); }
+      .bar { scrollbar-width: none; }
+      .bar::-webkit-scrollbar { display: none; }
+      .bar button, .bar select { flex: none; padding: 4px 10px; font-size: 12px; }
+      .bar select { max-width: 120px; }
+      .status { top: 8px; left: 8px; }
+    }
     .panel h3 { margin: 14px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6; }
     .panel h3:first-child { margin-top: 0; }
     .ctl { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; margin: 5px 0; }
@@ -461,15 +487,29 @@
       renderPanel();
     }
 
+    // On phones only one group shows at a time; these tabs pick it.
+    let activeGroup = CONTROLS[0].group;
+    function showGroup(g) {
+      activeGroup = g;
+      panel.querySelectorAll('[data-group]').forEach(el => el.classList.toggle('on', el.dataset.group === g));
+    }
+
     function renderPanel() {
       panel.innerHTML = '';
+      const tabs = document.createElement('div'); tabs.className = 'tabs';
+      for (const g of [...new Set(CONTROLS.map(c => c.group))]) {
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = g; b.dataset.group = g;
+        b.addEventListener('click', () => showGroup(g));
+        tabs.appendChild(b);
+      }
+      panel.appendChild(tabs);
       let group = '';
       for (const c of CONTROLS) {
         if (c.group !== group) {
           group = c.group;
           const h = document.createElement('h3'); h.textContent = group; panel.appendChild(h);
         }
-        const row = document.createElement('div'); row.className = 'ctl';
+        const row = document.createElement('div'); row.className = 'ctl'; row.dataset.group = c.group;
         const label = document.createElement('label'); label.textContent = c.label; row.appendChild(label);
         let input;
         if (c.type === 'palette') {
@@ -504,6 +544,7 @@
       const resetBtn = document.createElement('button'); resetBtn.type = 'button'; resetBtn.textContent = 'Reset';
       resetBtn.addEventListener('click', reset);
       actions.append(rnd, resetBtn); panel.appendChild(actions);
+      showGroup(activeGroup);
     }
     // A random but coherent look: a dark-to-light background palette around one hue,
     // a contrasting figure palette, and random amounts for the rest.
