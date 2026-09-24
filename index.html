@@ -22,7 +22,6 @@
     button:hover, select:hover { background: rgba(255, 255, 255, 0.16); }
     button[aria-pressed="true"] { background: #fff; color: #000; }
     .sep { width: 1px; height: 22px; background: rgba(255, 255, 255, 0.2); }
-    #presets { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
     .meter { width: 34px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
     .meter i { display: block; height: 100%; width: 0; background: #7dffb2; }
 
@@ -56,12 +55,10 @@
   <div id="msg" class="msg">Starting camera…</div>
   <div id="status" class="status"></div>
 
-  <div id="panel" class="panel glass" hidden></div>
+  <div id="panel" class="panel glass"></div>
 
   <div class="bar glass">
-    <div id="presets" role="group" aria-label="Look"></div>
-    <span class="sep"></span>
-    <button id="customize" type="button" aria-pressed="false">Customize</button>
+    <button id="customize" type="button">Hide controls</button>
     <button id="mic" type="button" aria-pressed="false">Mic <span class="meter"><i id="meter"></i></span></button>
     <select id="cameras" aria-label="Camera" hidden></select>
     <button id="mirror" type="button">Mirror</button>
@@ -71,31 +68,13 @@
   <script type="module">
     import { ImageSegmenter, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
 
-    // ---------- looks ----------
-    // Every look is a set of the same parameters, so any preset can be customised and new
-    // looks are just new numbers. Reactivity (vibration, mic, motion) is kept across presets.
-    const PRESETS = {
-      Afterglow: { bg0: '#04080f', bg1: '#0d3845', bg2: '#6ba39e', bg3: '#eef5d6', lo: 0.08, hi: 0.82, smoke: 0.7, bloom: 0.55, poster: 0, wave: 0, split: 0, splitL: '#e0715a', splitR: '#16212b',
-                   figMix: 0, fig0: '#b8381a', fig1: '#ef7a4d', fig2: '#ffb890', flat: 0.75, vertical: 0, edge: 0.45, haloCol: '#f23861', halo: 0.6,
-                   smear: 0, smearSide: 'both', grain: 0.2, vignette: 0.3, specks: 0, fringe: 0.2 },
-      Thermal:   { bg0: '#3a0a14', bg1: '#6e1a26', bg2: '#1b8a74', bg3: '#f4fbf6', lo: 0.1, hi: 0.9, smoke: 0.85, bloom: 0.7, poster: 5, wave: 0, split: 0, splitL: '#e0715a', splitR: '#16212b',
-                   figMix: 0, fig0: '#b3202a', fig1: '#1a3d9e', fig2: '#2cc7a0', flat: 0.5, vertical: 0, edge: 0.35, haloCol: '#ff4a1a', halo: 0.5,
-                   smear: 0.35, smearSide: 'both', grain: 0.15, vignette: 0.15, specks: 0.3, fringe: 0.5 },
-      Tide:      { bg0: '#03060a', bg1: '#081418', bg2: '#2f7d72', bg3: '#8fd1c0', lo: 0.15, hi: 0.9, smoke: 0.2, bloom: 0.1, poster: 0, wave: 0, split: 0, splitL: '#e0715a', splitR: '#16212b',
-                   figMix: 0, fig0: '#1b2320', fig1: '#f0621c', fig2: '#b6d38f', flat: 0.6, vertical: 0, edge: 0.7, haloCol: '#78c9a6', halo: 0.25,
-                   smear: 0, smearSide: 'both', grain: 0.22, vignette: 0.35, specks: 0.5, fringe: 0 },
-      Deep:      { bg0: '#0a1f0c', bg1: '#2d6b1e', bg2: '#1f7fc4', bg3: '#d9dde0', lo: 0.05, hi: 0.85, smoke: 0.6, bloom: 0.35, poster: 0, wave: 1, split: 0, splitL: '#e0715a', splitR: '#16212b',
-                   figMix: 0.85, fig0: '#0b0b0e', fig1: '#3a2a2a', fig2: '#f0c8b8', flat: 0.2, vertical: 0, edge: 0.5, haloCol: '#3aa0ff', halo: 0.3,
-                   smear: 0, smearSide: 'both', grain: 0.18, vignette: 0.2, specks: 0, fringe: 0 },
-      Split:     { bg0: '#0a0d10', bg1: '#2a2f36', bg2: '#8a6a60', bg3: '#e8d6c8', lo: 0.1, hi: 0.9, smoke: 0.5, bloom: 0, poster: 0, wave: 0, split: 1, splitL: '#e0715a', splitR: '#16212b',
-                   figMix: 0.9, fig0: '#050506', fig1: '#3a2a24', fig2: '#e8d6b0', flat: 0.1, vertical: 0, edge: 0.3, haloCol: '#ff6040', halo: 0.2,
-                   smear: 0.6, smearSide: 'left', grain: 0.25, vignette: 0.25, specks: 0.4, fringe: 0.1 },
-      Dusk:      { bg0: '#5a1a10', bg1: '#b0462a', bg2: '#5a5fb8', bg3: '#8a8ee0', lo: 0.1, hi: 0.7, smoke: 0.4, bloom: 0, poster: 0, wave: 0, split: 0, splitL: '#e0715a', splitR: '#16212b',
-                   figMix: 0, fig0: '#ff9aa8', fig1: '#ffc3b0', fig2: '#d9f5c8', flat: 0.9, vertical: 0.85, edge: 0.8, haloCol: '#ffb0c0', halo: 0.5,
-                   smear: 0, smearSide: 'both', grain: 0.3, vignette: 0.2, specks: 0.2, fringe: 0.1 },
-    };
+    // ---------- the look ----------
+    // One set of parameters drives the whole look; the controls edit it live. Reset returns
+    // to this starting point. Reactivity (vibration, mic, motion) is kept on reset.
+    const START = { bg0: '#04080f', bg1: '#0d3845', bg2: '#6ba39e', bg3: '#eef5d6', lo: 0.08, hi: 0.82, smoke: 0.7, bloom: 0.55, poster: 0, wave: 0, split: 0, splitL: '#e0715a', splitR: '#16212b',
+                    figMix: 0, figContrast: 1.15, figLo: 0.08, figHi: 0.88, figDetail: 0.55, fig0: '#b8381a', fig1: '#ef7a4d', fig2: '#ffb890', flat: 0.6, vertical: 0, edge: 0.45, haloCol: '#f23861', halo: 0.6,
+                    smear: 0, smearSide: 'both', grain: 0.2, vignette: 0.3, specks: 0, fringe: 0.2 };
     const REACT = { vibe: 0.6, micSens: 1, motionSens: 1 };
-    const DEFAULTS = { figContrast: 1 };             // settings a preset may leave out
 
     // Controls, grouped as they appear in the Customize panel.
     const CONTROLS = [
@@ -111,6 +90,9 @@
       { group: 'Figure', keys: ['fig0', 'fig1', 'fig2'], type: 'palette', label: 'Colours (dark → light)' },
       { group: 'Figure', key: 'figMix', label: 'Real image', min: 0, max: 1, step: 0.01 },
       { group: 'Figure', key: 'figContrast', label: 'Contrast', min: 0.3, max: 2.5, step: 0.01 },
+      { group: 'Figure', key: 'figLo', label: 'Shadows', min: 0, max: 0.6, step: 0.01 },
+      { group: 'Figure', key: 'figHi', label: 'Highlights', min: 0.4, max: 1, step: 0.01 },
+      { group: 'Figure', key: 'figDetail', label: 'Contours', min: 0, max: 1, step: 0.01 },
       { group: 'Figure', key: 'flat', label: 'Flatness', min: 0, max: 1, step: 0.01 },
       { group: 'Figure', key: 'vertical', label: 'Top-to-bottom', min: 0, max: 1, step: 0.01 },
       { group: 'Figure', key: 'edge', label: 'Edge softness', min: 0, max: 1, step: 0.01 },
@@ -126,8 +108,7 @@
       { group: 'Reactivity', key: 'micSens', label: 'Mic sensitivity', min: 0, max: 3, step: 0.05 },
       { group: 'Reactivity', key: 'motionSens', label: 'Motion sensitivity', min: 0, max: 3, step: 0.05 },
     ];
-    let preset = 'Afterglow';
-    let params = { ...DEFAULTS, ...PRESETS[preset], ...REACT };
+    let params = { ...START, ...REACT };
 
     const video = document.getElementById('video');
     const out = document.getElementById('out');
@@ -283,7 +264,7 @@
       uniform vec2 uRes;
       uniform float uTime, uHasMask, uMirror, uAudio, uBass, uMotion;
       uniform vec3 uBg0, uBg1, uBg2, uBg3, uFig0, uFig1, uFig2, uHaloCol, uSplitL, uSplitR;
-      uniform float uLo, uHi, uSmoke, uBloom, uPoster, uWave, uSplit, uFigMix, uFigContrast, uFlat, uVertical, uEdge, uHalo;
+      uniform float uLo, uHi, uSmoke, uBloom, uPoster, uWave, uSplit, uFigMix, uFigContrast, uFigLo, uFigHi, uFigDetail, uFlat, uVertical, uEdge, uHalo;
       uniform float uSmear, uSmearSide, uGrain, uVignette, uSpecks, uFringe, uVibe;
 
       vec3 ramp4(float t) {
@@ -328,8 +309,12 @@
 
         // the figure
         vec4 bl = blurAt(uv);
-        float pl = mix(dot(V, LUM), dot(bl.rgb, LUM), uFlat);
-        pl = (pl - 0.5) * uFigContrast + 0.5;                            // figure contrast
+        // Figure tone: a flattened base, plus the body's own contours (local detail = the frame
+        // minus its blur) so folds, jaw and limbs read, then shadow/highlight points and contrast.
+        float Lf = dot(V, LUM), Lfb = dot(bl.rgb, LUM);
+        float pl = mix(Lf, Lfb, uFlat) + (Lf - Lfb) * uFigDetail * 2.5;
+        pl = smoothstep(uFigLo, uFigHi, pl);
+        pl = clamp((pl - 0.5) * uFigContrast + 0.5, 0.0, 1.0);
         pl = mix(pl, 1.0 - uv.y, uVertical);
         vec3 fig = mix(ramp3(pl), clamp((V - 0.5) * uFigContrast + 0.5, 0.0, 1.0), uFigMix);
         float hard = smoothstep(0.35, 0.7, M), soft = bl.a;
@@ -395,7 +380,7 @@
     const draw = () => gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     const PARAM_UNIFORMS = ['bg0', 'bg1', 'bg2', 'bg3', 'fig0', 'fig1', 'fig2', 'haloCol', 'splitL', 'splitR',
-      'lo', 'hi', 'smoke', 'bloom', 'poster', 'wave', 'split', 'figMix', 'figContrast', 'flat', 'vertical', 'edge', 'halo',
+      'lo', 'hi', 'smoke', 'bloom', 'poster', 'wave', 'split', 'figMix', 'figContrast', 'figLo', 'figHi', 'figDetail', 'flat', 'vertical', 'edge', 'halo',
       'smear', 'smearSide', 'grain', 'vignette', 'specks', 'fringe', 'vibe'];
     const uname = k => 'u' + k[0].toUpperCase() + k.slice(1);
     let P, texVideo, texMask, A, B, C, D, Prev;
@@ -470,23 +455,11 @@
     }
 
     // ---------- UI ----------
-    const presetsEl = document.getElementById('presets');
     const panel = document.getElementById('panel');
-    function renderPresets() {
-      presetsEl.innerHTML = '';
-      for (const name of [...Object.keys(PRESETS), ...(preset === 'Custom' ? ['Custom'] : [])]) {
-        const b = document.createElement('button');
-        b.type = 'button'; b.textContent = name; b.setAttribute('aria-pressed', name === preset);
-        if (name !== 'Custom') b.addEventListener('click', () => choose(name));
-        presetsEl.appendChild(b);
-      }
+    function reset() {
+      params = { ...START, vibe: params.vibe, micSens: params.micSens, motionSens: params.motionSens };
+      renderPanel();
     }
-    function choose(name) {
-      const react = { vibe: params.vibe, micSens: params.micSens, motionSens: params.motionSens };
-      preset = name; params = { ...DEFAULTS, ...PRESETS[name], ...react };
-      renderPresets(); renderPanel();
-    }
-    function edited() { if (preset !== 'Custom') { preset = 'Custom'; renderPresets(); } }
 
     function renderPanel() {
       panel.innerHTML = '';
@@ -503,24 +476,24 @@
           input = document.createElement('div'); input.className = 'swatches' + (c.keys.length === 3 ? ' three' : '');
           for (const k of c.keys) {
             const s = document.createElement('input'); s.type = 'color'; s.value = params[k]; s.setAttribute('aria-label', `${c.label} ${k}`);
-            s.addEventListener('input', () => { params[k] = s.value; edited(); });
+            s.addEventListener('input', () => { params[k] = s.value });
             input.appendChild(s);
           }
           if (c.keys.length === 2) input.style.gridTemplateColumns = '1fr 1fr';
         } else if (c.type === 'color') {
           input = document.createElement('input'); input.type = 'color'; input.value = params[c.key];
-          input.addEventListener('input', () => { params[c.key] = input.value; edited(); });
+          input.addEventListener('input', () => { params[c.key] = input.value });
         } else if (c.type === 'toggle') {
           input = document.createElement('input'); input.type = 'checkbox'; input.checked = !!params[c.key];
-          input.addEventListener('change', () => { params[c.key] = input.checked ? 1 : 0; edited(); });
+          input.addEventListener('change', () => { params[c.key] = input.checked ? 1 : 0 });
         } else if (c.type === 'select') {
           input = document.createElement('select');
           for (const o of c.options) input.add(new Option(o, o, false, o === params[c.key]));
-          input.addEventListener('change', () => { params[c.key] = input.value; edited(); });
+          input.addEventListener('change', () => { params[c.key] = input.value });
         } else {
           input = document.createElement('input'); input.type = 'range';
           Object.assign(input, { min: c.min, max: c.max, step: c.step, value: params[c.key] });
-          input.addEventListener('input', () => { params[c.key] = +input.value; if (c.group !== 'Reactivity') edited(); });
+          input.addEventListener('input', () => { params[c.key] = +input.value });
         }
         label.htmlFor = input.id = `ctl-${c.key || c.keys[0]}`;
         row.appendChild(input); panel.appendChild(row);
@@ -528,9 +501,9 @@
       const actions = document.createElement('div'); actions.className = 'row';
       const rnd = document.createElement('button'); rnd.type = 'button'; rnd.textContent = 'Randomize';
       rnd.addEventListener('click', randomize);
-      const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset';
-      reset.addEventListener('click', () => choose(preset === 'Custom' ? 'Afterglow' : preset));
-      actions.append(rnd, reset); panel.appendChild(actions);
+      const resetBtn = document.createElement('button'); resetBtn.type = 'button'; resetBtn.textContent = 'Reset';
+      resetBtn.addEventListener('click', reset);
+      actions.append(rnd, resetBtn); panel.appendChild(actions);
     }
     // A random but coherent look: a dark-to-light background palette around one hue,
     // a contrasting figure palette, and random amounts for the rest.
@@ -546,16 +519,16 @@
         fig0: hsl(fh, r(0.6, 1), r(0.25, 0.4)), fig1: hsl(fh + r(-20, 20), r(0.6, 1), r(0.5, 0.6)), fig2: hsl(fh + r(-40, 40), r(0.5, 1), r(0.75, 0.88)),
         haloCol: hsl(fh + r(-30, 30), 0.9, 0.6),
         smoke: r(0.2, 0.9), bloom: r(0, 0.7), poster: Math.random() < 0.3 ? Math.round(r(3, 6)) : 0, wave: Math.random() < 0.3 ? r(0.3, 1.2) : 0,
-        split: 0, figMix: Math.random() < 0.25 ? r(0.6, 0.9) : 0, figContrast: r(0.8, 1.6), flat: r(0.3, 0.9), vertical: Math.random() < 0.3 ? r(0.4, 0.9) : 0,
+        split: 0, figMix: Math.random() < 0.25 ? r(0.6, 0.9) : 0, figContrast: r(0.9, 1.6), figLo: r(0, 0.2), figHi: r(0.7, 1), figDetail: r(0.2, 0.8), flat: r(0.3, 0.9), vertical: Math.random() < 0.3 ? r(0.4, 0.9) : 0,
         edge: r(0.3, 0.8), halo: r(0.1, 0.7), smear: Math.random() < 0.3 ? r(0.2, 0.6) : 0, smearSide: 'both',
         grain: r(0.1, 0.3), vignette: r(0.1, 0.4), specks: r(0, 0.5), fringe: r(0, 0.4),
       });
-      edited(); renderPanel();
+      renderPanel();
     }
 
     document.getElementById('customize').addEventListener('click', e => {
       panel.hidden = !panel.hidden;
-      e.currentTarget.setAttribute('aria-pressed', !panel.hidden);
+      e.currentTarget.textContent = panel.hidden ? 'Show controls' : 'Hide controls';
     });
     document.getElementById('mic').addEventListener('click', e => toggleMic(e.currentTarget));
     picker.addEventListener('change', () => start(picker.value));
@@ -572,11 +545,11 @@
       s.drawImage(out, 0, 0);
       const a = document.createElement('a');
       a.href = shot.toDataURL('image/png');
-      a.download = `${preset.toLowerCase()}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+      a.download = `visualizer-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
       a.click();
     });
 
-    renderPresets(); renderPanel();
+    renderPanel();
     if (!navigator.mediaDevices?.getUserMedia) {
       show('This browser can’t access the camera here. Open the page from http://localhost.');
     } else if (!gl) {
